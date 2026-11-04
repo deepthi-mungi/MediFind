@@ -1,10 +1,11 @@
-
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const User = require("../models/user");
 const Pharmacy = require("../models/pharmacy");
+const Address = require("../models/address");
+const { authenticateToken, authorizeRole } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -23,7 +24,7 @@ function generateToken(user) {
 // CUSTOMER REGISTRATION
 router.post("/register/customer", async (req, res) => {
   try {
-    const { name, email, phone, password } = req.body;
+    const { name, email, phone, password, address } = req.body;
 
     if (!name?.trim() || !email?.trim() || !password) {
       return res.status(400).json({
@@ -53,8 +54,10 @@ router.post("/register/customer", async (req, res) => {
       name: name.trim(),
       email: email.trim().toLowerCase(),
       phone: phone?.trim() || "",
+      address: address?.trim() || "",
       password: hashedPassword,
-      role: "customer"
+      role: "customer",
+      isActive: true
     });
 
     res.status(201).json({
@@ -63,10 +66,11 @@ router.post("/register/customer", async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
+        address: user.address,
         role: user.role
       }
     });
-
   } catch (error) {
     console.error("Customer registration error:", error);
 
@@ -91,7 +95,8 @@ router.post("/register/pharmacy", async (req, res) => {
       latitude,
       longitude,
       openingTime,
-      closingTime
+      closingTime,
+      licenseNumber
     } = req.body;
 
     if (
@@ -119,8 +124,12 @@ router.post("/register/pharmacy", async (req, res) => {
     const lon = Number(longitude);
 
     if (
-      !Number.isFinite(lat) || lat < -90 || lat > 90 ||
-      !Number.isFinite(lon) || lon < -180 || lon > 180
+      !Number.isFinite(lat) ||
+      lat < -90 ||
+      lat > 90 ||
+      !Number.isFinite(lon) ||
+      lon < -180 ||
+      lon > 180
     ) {
       return res.status(400).json({
         message: "Please provide valid pharmacy GPS coordinates."
@@ -144,7 +153,8 @@ router.post("/register/pharmacy", async (req, res) => {
       email: email.trim().toLowerCase(),
       phone: phone.trim(),
       password: hashedPassword,
-      role: "pharmacy"
+      role: "pharmacy",
+      isActive: true
     });
 
     createdUserId = user._id;
@@ -156,21 +166,28 @@ router.post("/register/pharmacy", async (req, res) => {
       address: address.trim(),
       latitude: lat,
       longitude: lon,
+      location: {
+        type: "Point",
+        coordinates: [lon, lat]
+      },
       openingTime: openingTime || "",
-      closingTime: closingTime || ""
+      closingTime: closingTime || "",
+      licenseNumber: licenseNumber?.trim() || "",
+      verificationStatus: "pending"
     });
 
     res.status(201).json({
-      message: "Pharmacy registered successfully!",
+      message:
+        "Pharmacy registered! Your account is pending administrator verification.",
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         role: user.role
       },
       pharmacy
     });
-
   } catch (error) {
     // Remove the user if pharmacy profile creation failed
     if (createdUserId) {
@@ -185,7 +202,7 @@ router.post("/register/pharmacy", async (req, res) => {
   }
 });
 
-// LOGIN FOR CUSTOMERS AND PHARMACIES
+// LOGIN FOR CUSTOMERS, PHARMACIES AND ADMINISTRATORS
 router.post("/login", async (req, res) => {
   try {
     const { email, password, role } = req.body;
@@ -196,7 +213,7 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    if (!["customer", "pharmacy"].includes(role)) {
+    if (!["customer", "pharmacy", "admin"].includes(role)) {
       return res.status(400).json({
         message: "Invalid account type."
       });
@@ -213,10 +230,14 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password
-    );
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Your account has been deactivated. Please contact the administrator."
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, user.password);
 
     if (!passwordMatches) {
       return res.status(401).json({
@@ -245,11 +266,12 @@ router.post("/login", async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone || "",
+        address: user.address || "",
         role: user.role
       },
       pharmacy
     });
-
   } catch (error) {
     console.error("Login error:", error);
 
@@ -258,5 +280,176 @@ router.post("/login", async (req, res) => {
     });
   }
 });
+
+// GET CURRENT USER PROFILE
+router.get("/me", authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    return res.json(user);
+  } catch (error) {
+    console.error("Get user profile error:", error);
+    return res.status(500).json({ message: "Unable to load profile." });
+  }
+});
+
+// UPDATE CURRENT USER PROFILE
+router.put("/me", authenticateToken, async (req, res) => {
+  try {
+    const { name, phone, address } = req.body;
+    if (!name?.trim()) {
+      return res.status(400).json({ message: "Name is required." });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      {
+        $set: {
+          name: name.trim(),
+          phone: phone?.trim() || "",
+          address: address?.trim() || ""
+        }
+      },
+      { returnDocument: "after", runValidators: true }
+    ).select("-password");
+
+    return res.json({
+      message: "Profile updated successfully!",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone || "",
+        address: user.address || "",
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error("Update user profile error:", error);
+    return res.status(500).json({ message: "Unable to update profile." });
+  }
+});
+
+// CUSTOMER SAVED ADDRESSES
+router.get(
+  "/addresses",
+  authenticateToken,
+  authorizeRole("customer"),
+  async (req, res) => {
+    try {
+      const addresses = await Address.find({ user: req.user.id }).sort({
+        isDefault: -1,
+        createdAt: -1
+      });
+      return res.json(addresses);
+    } catch (error) {
+      console.error("Get addresses error:", error);
+      return res.status(500).json({ message: "Unable to load addresses." });
+    }
+  }
+);
+
+router.post(
+  "/addresses",
+  authenticateToken,
+  authorizeRole("customer"),
+  async (req, res) => {
+    try {
+      const {
+        label,
+        recipientName,
+        phone,
+        street,
+        area,
+        city,
+        state,
+        pincode,
+        landmark,
+        latitude,
+        longitude,
+        isDefault
+      } = req.body;
+
+      if (
+        !recipientName?.trim() ||
+        !phone?.trim() ||
+        !street?.trim() ||
+        !city?.trim() ||
+        !pincode?.trim()
+      ) {
+        return res.status(400).json({
+          message:
+            "Recipient name, phone, street, city and pincode are required."
+        });
+      }
+
+      if (isDefault) {
+        await Address.updateMany(
+          { user: req.user.id },
+          { $set: { isDefault: false } }
+        );
+      }
+
+      const address = await Address.create({
+        user: req.user.id,
+        label: ["Home", "Work", "Other"].includes(label) ? label : "Home",
+        recipientName: recipientName.trim(),
+        phone: phone.trim(),
+        street: street.trim(),
+        area: area?.trim() || "",
+        city: city.trim(),
+        state: state?.trim() || "",
+        pincode: pincode.trim(),
+        landmark: landmark?.trim() || "",
+        latitude:
+          latitude !== undefined &&
+          latitude !== "" &&
+          latitude !== null &&
+          Number.isFinite(Number(latitude))
+            ? Number(latitude)
+            : null,
+        longitude:
+          longitude !== undefined &&
+          longitude !== "" &&
+          longitude !== null &&
+          Number.isFinite(Number(longitude))
+            ? Number(longitude)
+            : null,
+        isDefault: Boolean(isDefault)
+      });
+
+      return res.status(201).json({
+        message: "Delivery address saved!",
+        address
+      });
+    } catch (error) {
+      console.error("Save address error:", error);
+      return res.status(500).json({ message: "Unable to save address." });
+    }
+  }
+);
+
+router.delete(
+  "/addresses/:id",
+  authenticateToken,
+  authorizeRole("customer"),
+  async (req, res) => {
+    try {
+      const deleted = await Address.findOneAndDelete({
+        _id: req.params.id,
+        user: req.user.id
+      });
+      if (!deleted) {
+        return res.status(404).json({ message: "Address not found." });
+      }
+      return res.json({ message: "Address removed." });
+    } catch (error) {
+      console.error("Delete address error:", error);
+      return res.status(500).json({ message: "Unable to remove address." });
+    }
+  }
+);
 
 module.exports = router;

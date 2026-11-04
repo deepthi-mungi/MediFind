@@ -1,4 +1,3 @@
-
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
@@ -25,8 +24,17 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["customer", "pharmacy"],
+      enum: ["customer", "pharmacy", "admin"],
       required: true
+    },
+    isActive: {
+      type: Boolean,
+      default: true
+    },
+    address: {
+      type: String,
+      trim: true,
+      default: ""
     }
   },
   { timestamps: true }

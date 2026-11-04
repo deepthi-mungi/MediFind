@@ -22,3 +22,6 @@ Thumbs.db
 
 # Editor
 .vscode/
+
+# Local backups
+backup_before_phase1/

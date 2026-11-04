@@ -1,8 +1,8 @@
-
 const jwt = require("jsonwebtoken");
+const User = require("../models/user");
 
 // CHECK LOGIN TOKEN
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(" ")[1];
 
@@ -14,7 +14,25 @@ function authenticateToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    const currentUser = await User.findById(decoded.id).select("role isActive");
+
+    if (!currentUser) {
+      return res.status(401).json({
+        message: "Account not found. Please login again."
+      });
+    }
+
+    if (currentUser.isActive === false) {
+      return res.status(403).json({
+        message: "Your account has been deactivated. Please contact the administrator."
+      });
+    }
+
+    req.user = {
+      ...decoded,
+      id: currentUser._id.toString(),
+      role: currentUser.role
+    };
     next();
   } catch (error) {
     return res.status(403).json({
