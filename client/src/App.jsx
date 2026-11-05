@@ -9,7 +9,7 @@ import CustomerPortal from "./components/CustomerPortal";
 import PharmacyOwnerPortal from "./components/PharmacyOwnerPortal";
 import InteractiveMap from "./components/InteractiveMap";
 
-const API_URL = "http://localhost:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 const MEDICINE_CATEGORIES = [
   "All",
